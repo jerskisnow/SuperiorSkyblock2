@@ -10,6 +10,7 @@ import com.bgsoftware.superiorskyblock.utils.LocationUtils;
 import com.bgsoftware.superiorskyblock.utils.ServerVersion;
 import com.bgsoftware.superiorskyblock.utils.entities.EntityUtils;
 import com.bgsoftware.superiorskyblock.utils.items.ItemUtils;
+import com.bgsoftware.superiorskyblock.utils.legacy.Materials;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -22,7 +23,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
-import org.bukkit.event.entity.EntitySpawnEvent;
+import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.event.hanging.HangingPlaceEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.vehicle.VehicleCreateEvent;
@@ -48,7 +49,7 @@ public final class UpgradeTypeEntityLimits implements IUpgradeType {
 
     @Override
     public Listener getListener() {
-        return new BlockLimitsListener();
+        return new EntityLimitsListener();
     }
 
     @Override
@@ -56,12 +57,12 @@ public final class UpgradeTypeEntityLimits implements IUpgradeType {
         return Collections.emptyList();
     }
 
-    private final class BlockLimitsListener implements Listener {
+    private final class EntityLimitsListener implements Listener {
 
         private final Map<Location, UUID> vehiclesOwners = new HashMap<>();
 
-        @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-        public void onEntitySpawn(EntitySpawnEvent e) {
+        @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+        public void onEntitySpawn(CreatureSpawnEvent e) {
             Island island = plugin.getGrid().getIslandAt(e.getLocation());
 
             if (island == null)
@@ -72,16 +73,12 @@ public final class UpgradeTypeEntityLimits implements IUpgradeType {
 
             island.hasReachedEntityLimit(Key.of(e.getEntity())).whenComplete((result, ex) -> {
                 if (result) {
-                    if (ServerVersion.isAtLeast(ServerVersion.v1_17)) {
-                        Executor.ensureMain(() -> e.getEntity().remove());
-                    } else {
-                        e.getEntity().remove();
-                    }
+                    e.setCancelled(true);
                 }
             });
         }
 
-        @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+        @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
         public void onHangingPlace(HangingPlaceEvent e) {
             Island island = plugin.getGrid().getIslandAt(e.getEntity().getLocation());
 
@@ -92,11 +89,8 @@ public final class UpgradeTypeEntityLimits implements IUpgradeType {
                 return;
 
             island.hasReachedEntityLimit(Key.of(e.getEntity())).whenComplete((result, ex) -> {
-                if (result && e.getEntity().isValid() && !e.getEntity().isDead()) {
-                    e.getEntity().remove();
-                    if (e.getPlayer().getGameMode() != GameMode.CREATIVE)
-                        ItemUtils.addItem(asItemStack(e.getEntity()), e.getPlayer().getInventory(),
-                                e.getPlayer().getLocation());
+                if (result) {
+                    e.setCancelled(true);
                 }
             });
         }
@@ -105,8 +99,8 @@ public final class UpgradeTypeEntityLimits implements IUpgradeType {
         public void onVehicleSpawn(PlayerInteractEvent e) {
             if (e.getAction() != Action.RIGHT_CLICK_BLOCK || e.getItem() == null ||
                     e.getPlayer().getGameMode() == GameMode.CREATIVE ||
-                    !e.getClickedBlock().getType().name().contains("RAIL") ||
-                    !e.getItem().getType().name().contains("MINECART"))
+                    !Materials.isRail(e.getClickedBlock().getType()) ||
+                    !Materials.isMinecart(e.getItem().getType()))
                 return;
 
             if (INTERACT_GET_HAND.isValid() && INTERACT_GET_HAND.invoke(e) != EquipmentSlot.HAND)
@@ -123,7 +117,7 @@ public final class UpgradeTypeEntityLimits implements IUpgradeType {
             Executor.sync(() -> vehiclesOwners.remove(blockLocation), 40L);
         }
 
-        @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+        @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
         public void onVehicleSpawn(VehicleCreateEvent e) {
             if (!(e.getVehicle() instanceof Minecart))
                 return;
@@ -139,9 +133,9 @@ public final class UpgradeTypeEntityLimits implements IUpgradeType {
                 return;
 
             island.hasReachedEntityLimit(Key.of(e.getVehicle())).whenComplete((result, ex) -> {
-                if (result && e.getVehicle().isValid() && !e.getVehicle().isDead()) {
+                if (result) {
                     Executor.sync(() -> {
-                        e.getVehicle().remove();
+                        removeEntity(e.getVehicle());
                         if (placedVehicle != null) {
                             Player player = Bukkit.getPlayer(placedVehicle);
                             if (player != null)
@@ -181,6 +175,14 @@ public final class UpgradeTypeEntityLimits implements IUpgradeType {
             }
 
             throw new IllegalArgumentException("Cannot find an item for " + entity.getType());
+        }
+
+        private void removeEntity(Entity entity) {
+            if (ServerVersion.isAtLeast(ServerVersion.v1_17)) {
+                Executor.ensureMain(entity::remove);
+            } else {
+                entity.remove();
+            }
         }
 
     }

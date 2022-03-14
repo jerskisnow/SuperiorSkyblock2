@@ -54,7 +54,6 @@ import com.bgsoftware.superiorskyblock.utils.LocationUtils;
 import com.bgsoftware.superiorskyblock.utils.ServerVersion;
 import com.bgsoftware.superiorskyblock.utils.StringUtils;
 import com.bgsoftware.superiorskyblock.utils.debug.PluginDebugger;
-import com.bgsoftware.superiorskyblock.utils.entities.EntityUtils;
 import com.bgsoftware.superiorskyblock.utils.events.EventsCaller;
 import com.bgsoftware.superiorskyblock.utils.islands.IslandUtils;
 import com.bgsoftware.superiorskyblock.utils.islands.SortingComparators;
@@ -119,7 +118,7 @@ public final class SIsland implements Island {
     private static int blocksUpdateCounter = 0;
 
     private final DatabaseBridge databaseBridge = plugin.getFactory().createDatabaseBridge(this);
-    private final IslandBank islandBank = plugin.getFactory().createIslandBank(this);
+    private final IslandBank islandBank = plugin.getFactory().createIslandBank(this, this::hasGiveInterestFailed);
     private final IslandCalculationAlgorithm calculationAlgorithm = plugin.getFactory().createIslandCalculationAlgorithm(this);
     private final IslandBlocksTrackerAlgorithm blocksTracker = plugin.getFactory().createIslandBlocksTrackerAlgorithm(this);
     private final IslandEntitiesTrackerAlgorithm entitiesTracker = plugin.getFactory().createIslandEntitiesTrackerAlgorithm(this);
@@ -146,6 +145,7 @@ public final class SIsland implements Island {
     private volatile long lastTimeUpdate = -1;
     private volatile long lastInterest = -1L;
     private volatile long lastUpgradeTime = -1L;
+    private volatile boolean giveInterestFailed = false;
 
     /*
      * Island Upgrade Values
@@ -217,6 +217,7 @@ public final class SIsland implements Island {
         updateDatesFormatter();
         assignIslandChest();
         updateUpgrades();
+        this.entitiesTracker.recalculateEntityCounts();
 
         databaseBridge.setDatabaseBridgeMode(DatabaseBridgeMode.SAVE_DATA);
     }
@@ -1659,6 +1660,10 @@ public final class SIsland implements Island {
 
         this.bankLimit = new UpgradeValue<>(bankLimit, i -> i.compareTo(new BigDecimal(-1)) < 0);
 
+        // Trying to give interest again if the last one failed.
+        if(hasGiveInterestFailed())
+            giveInterest(false);
+
         IslandsDatabaseBridge.saveBankLimit(this);
     }
 
@@ -1679,10 +1684,18 @@ public final class SIsland implements Island {
                 currentTime - owner.getLastTimeStatus() > BuiltinModules.BANK.bankInterestRecentActive)
             return false;
 
-        PluginDebugger.debug("Action: Give Bank Interest, Island: " + owner.getName());
-
         BigDecimal balance = islandBank.getBalance().max(BigDecimal.ONE);
         BigDecimal balanceToGive = balance.multiply(new BigDecimal(BuiltinModules.BANK.bankInterestPercentage / 100D));
+
+        // If the money that will be given exceeds limit, we want to give money later.
+        if(balanceToGive.add(balance).compareTo(getBankLimit()) > 0) {
+            giveInterestFailed = true;
+            return false;
+        }
+
+        giveInterestFailed = false;
+
+        PluginDebugger.debug("Action: Give Bank Interest, Island: " + owner.getName());
 
         islandBank.depositAdminMoney(Bukkit.getConsoleSender(), balanceToGive);
         plugin.getMenus().refreshIslandBank(this);
@@ -1690,6 +1703,11 @@ public final class SIsland implements Island {
         setLastInterestTime(currentTime);
 
         return true;
+    }
+
+
+    private boolean hasGiveInterestFailed() {
+        return this.giveInterestFailed;
     }
 
     @Override
@@ -2257,29 +2275,12 @@ public final class SIsland implements Island {
         if (entityLimit <= IslandUtils.NO_LIMIT.get())
             return CompletableFuture.completedFuture(false);
 
-        AtomicInteger amountOfEntities = new AtomicInteger(0);
+        return CompletableFuture.completedFuture(this.entitiesTracker.getEntityCount(key) + amount > entityLimit);
+    }
 
-        for (World.Environment environment : World.Environment.values()) {
-            try {
-                chunks.addAll(getAllChunksAsync(environment, true, true, chunk ->
-                        amountOfEntities.set(amountOfEntities.get() + (int) Arrays.stream(chunk.getEntities())
-                                .filter(entity -> key.equals(EntityUtils.getLimitEntityType(entity)) &&
-                                        !EntityUtils.canBypassEntityLimit(entity)).count())));
-            } catch (Exception ignored) {
-            }
-        }
-
-        CompletableFuture<Boolean> completableFuture = new CompletableFuture<>();
-
-        Executor.async(() -> {
-            //Waiting for all the chunks to load
-            chunks.forEachCompleted(chunk -> {
-            }, error -> {
-            });
-            completableFuture.complete(amountOfEntities.get() + amount - 1 > entityLimit);
-        });
-
-        return completableFuture;
+    @Override
+    public IslandEntitiesTrackerAlgorithm getEntitiesTracker() {
+        return this.entitiesTracker;
     }
 
     @Override
